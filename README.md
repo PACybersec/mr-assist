@@ -1,92 +1,91 @@
 # Mr.Assist — Local AI IT Operations Assistant
 
-Mr.Assist is a local AI-powered IT operations assistant built with Python, Streamlit, Ollama and ChromaDB. It uses retrieval-augmented generation (RAG) to answer IT support questions using a knowledge base of documented procedures.
+Mr.Assist is a local AI-powered IT operations assistant built with Python, Streamlit, Ollama and ChromaDB. It uses retrieval over a knowledge base of documented IT procedures to support troubleshooting, and presents retrieved evidence to the user.
 
-The project explores how local language models and semantic search can support IT troubleshooting while reducing unsupported answers when relevant documentation is unavailable.
+## Current Status
+
+Mr.Assist is currently a **retrieval-focused prototype**, not a complete generative RAG system.
+
+**Implemented:**
+
+- Streamlit interface.
+- ChromaDB persistent vector store.
+- Ollama embeddings with `nomic-embed-text`.
+- Document retrieval.
+- Semantic distance filtering with a threshold of `0.35`.
+- Strict mode: static response including retrieved evidence when fragments are accepted, or static abstention when none are accepted.
+
+**Planned:**
+
+- Response generation with a local LLM through Ollama, using retrieved documentation and conversation history, with strict abstention safeguards. This is **not implemented** in the current version.
+
+Last confirmed test run: **16 passed**, with 1 unrelated ChromaDB deprecation warning, on November 1, 2026.
 
 ## Features
 
-- **Local LLM inference:** generates responses using Ollama.
-- **Retrieval-Augmented Generation (RAG):** retrieves relevant passages from IT documentation before generating an answer.
-- **Vector search:** stores document embeddings in ChromaDB.
-- **Source transparency:** displays the filenames used to support responses.
-- **Relevance filtering:** rejects retrieved passages that exceed a configurable distance threshold.
-- **Knowledge base management:** re-indexes Markdown documents from the Streamlit interface.
-- **Conversation history:** preserves recent messages during a session.
-- **Automated tests:** tests the relevance-filtering logic.
+- **Local embeddings:** Ollama with the `nomic-embed-text` model.
+- **Vector storage:** ChromaDB persistent client, cosine distance.
+- **Retrieval:** semantic search over indexed Markdown chunks.
+- **Relevance filtering:** distance threshold (`0.35` by default; pending calibration).
+- **Strict mode:** static response from accepted evidence, or abstention.
+- **Source transparency:** retrieved evidence is displayed to the user.
+- **Knowledge base management:** re-index documents from the Streamlit interface.
+- **Conversation history:** messages kept in the Streamlit session state.
+
+## How It Works
+
+The current flow is:
+
+`ingest → chunk → embed → store → retrieve → filter → respond with static evidence or abstain`
+
+1. **Knowledge ingestion:** Markdown IT procedures from `app/data/knowledge/`.
+2. **Chunking:** simple paragraph-based splitting with a maximum of 800 characters.
+3. **Embeddings:** Ollama `nomic-embed-text`.
+4. **Storage:** ChromaDB collection `it_knowledge`, cosine distance.
+5. **Retrieval:** embed the user question and query the collection.
+6. **Filtering:** discard retrieved fragments whose distance exceeds the configured threshold.
+7. **Response:** return a static response including the accepted evidence, or abstain.
 
 ## Technology Stack
 
 - Python
 - Streamlit
-- Ollama
-- Qwen 3 (0.6B)
-- Nomic Embed Text
 - ChromaDB
+- Ollama
+- Nomic Embed Text
 - Pytest
-
-## Architecture
-
-1. **Knowledge ingestion:** Markdown IT procedures are loaded from the local knowledge directory.
-2. **Chunking and embeddings:** documents are split into manageable passages and converted into embeddings.
-3. **Vector storage:** ChromaDB stores the passages, embeddings and source metadata.
-4. **Retrieval:** the user's question is embedded and compared with indexed passages.
-5. **Relevance filtering:** passages outside the configured distance threshold are discarded.
-6. **Response generation:** Ollama generates an answer using the retrieved documentation and recent conversation history.
-7. **Source display:** the interface identifies the documents used for the response.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.11 or newer, subject to dependency compatibility.
+- Python 3.14.8 (used for the latest verified test run; other Python versions have not been validated).
 - Ollama installed and running.
-- Git.
-
-### 1. Clone the repository
+- Pull the current embedding model:
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/mr-assist.git
-cd mr-assist
-```
-
-Replace `YOUR-USERNAME` with your GitHub username.
-
-### 2. Create and activate a virtual environment
-
-On Linux with Fish shell:
-
-```fish
-python -m venv .venv
-source .venv/bin/activate.fish
-```
-
-### 3. Install dependencies
-
-Install the packages used by the project:
-
-```bash
-python -m pip install streamlit ollama chromadb pytest
-```
-
-### 4. Download the required models
-
-```bash
-ollama pull qwen3:0.6b
 ollama pull nomic-embed-text
 ```
 
-Ensure the Ollama service is running before launching the application.
+### Installation
 
-### 5. Run the application
+```bash
+git clone https://github.com/PACybersec/mr-assist.git
+cd mr-assist
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install streamlit ollama chromadb pytest
+```
+
+### Run
 
 ```bash
 streamlit run app/main.py
 ```
 
-Open the local address printed by Streamlit, usually `http://localhost:8501`.
+After running, the application can be accessed at `http://localhost:8501`.
 
-### 6. Run the tests
+### Tests
 
 ```bash
 python -m pytest -v
@@ -98,37 +97,40 @@ Place IT procedure documents in Markdown format in:
 
 `app/data/knowledge/`
 
-Use the **Update documents** button in the application sidebar to index the documents.
+Use the **Update documents** button in the application sidebar to re-index the documents.
 
-The current example procedure covers troubleshooting an unavailable internal server, including initial diagnosis, resolution and security considerations.
+The current example knowledge base covers troubleshooting an unavailable internal server, including diagnosis, resolution and security considerations.
+
+## Evaluation
+
+Retrieval evaluation uses cases R01–R05. The evaluator checks expected evidence and explicitly forbidden evidence.
+
+- The suite includes relevance-filtering tests and retrieval evaluation tests.
+- Last confirmed run: **16 passed**, with 1 unrelated ChromaDB deprecation warning, on November 1, 2026.
+- The evaluator relies on textual matching, not semantic understanding, and does not validate abstention behavior in the running application.
 
 ## Security Considerations
 
-- The application is designed to run locally.
+- Designed for local use.
 - Retrieved documentation is treated as reference material rather than trusted instructions.
-- The assistant is instructed not to invent internal policies when relevant documentation is unavailable.
-- The example knowledge base contains fictional IT procedures.
-- The project does not currently implement enterprise authentication, role-based access control or production-grade audit logging.
-- The relevance threshold is configurable and requires evaluation against a representative dataset; it is not a calibrated confidence score.
+- No complete prompt-injection defense has been implemented and validated yet.
 
-Do not add credentials, API keys, private logs, personal information or confidential company documentation to the public repository.
+> [!WARNING]
+> Do not commit or publish credentials, passwords, API keys, tokens, private logs, personal information, or confidential company documentation to the repository.
 
-## Current Limitations
+## Limitations
 
-- Response quality depends on the selected language model and available documentation.
-- Retrieval quality depends on document chunking, embedding quality and the configured distance threshold.
-- The current test suite focuses on relevance filtering rather than end-to-end model evaluation.
-- The application is a learning and portfolio project, not a production-ready IT service management platform.
+- Response generation with a local LLM is not implemented.
+- The retrieval threshold (`0.35`) is pending calibration.
+- Chunking is simple (paragraph-based, maximum 800 characters).
+- Evaluation relies on textual matching, not semantic understanding.
+- The project is not production-ready.
 
 ## Roadmap
 
-- [ ] Add more troubleshooting procedures.
-- [ ] Improve retrieval evaluation with a representative test dataset.
-- [ ] Add end-to-end RAG tests.
-- [ ] Improve error handling and application health checks.
-- [ ] Add structured logging and response evaluation.
-- [ ] Develop a security-focused evaluation suite for prompt injection and untrusted documents.
-- [ ] Improve the interface and add demonstration screenshots.
+- Implement local response generation through Ollama.
+- Calibrate the retrieval threshold.
+- Add end-to-end RAG tests.
 
 ## Disclaimer
 

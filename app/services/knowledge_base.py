@@ -1,20 +1,18 @@
 
 from hashlib import sha256
-from pathlib import Path
 
 import chromadb
 import ollama
 
-
-# Rutas del proyecto
-APP_DIR = Path(__file__).resolve().parents[1]
-KNOWLEDGE_DIR = APP_DIR / "data" / "knowledge"
-DATABASE_DIR = APP_DIR / "data" / "chroma_db"
-
-# Modelos y configuración
-EMBEDDING_MODEL = "nomic-embed-text"
-COLLECTION_NAME = "it_knowledge"
-DEFAULT_MAX_DISTANCE = 0.35
+from app.core.config import (
+    COLLECTION_NAME,
+    DATABASE_DIR,
+    DEFAULT_MAX_DISTANCE,
+    DEFAULT_MAX_CHARS,
+    DEFAULT_N_RESULTS,
+    EMBEDDING_MODEL,
+    KNOWLEDGE_DIR,
+)
 
 # Base vectorial persistente
 client = chromadb.PersistentClient(
@@ -27,7 +25,7 @@ collection = client.get_or_create_collection(
 )
 
 
-def split_text(text: str, max_chars: int = 800) -> list[str]:
+def split_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     """Divide un documento en fragmentos manejables."""
     paragraphs = [
         paragraph.strip()
@@ -91,16 +89,20 @@ def index_documents() -> int:
             where={"source": document.name}
         )
 
-        if existing["ids"]:
-            collection.delete(ids=existing["ids"])
-
         if not chunks:
+            if existing["ids"]:
+                collection.delete(ids=existing["ids"])
             continue
 
         embeddings = ollama.embed(
             model=EMBEDDING_MODEL,
             input=chunks,
         )["embeddings"]
+
+        if len(embeddings) != len(chunks):
+            raise ValueError(
+                "Los embeddings generados no coinciden con los fragmentos."
+            )
 
         ids = [
             sha256(
@@ -126,7 +128,7 @@ def index_documents() -> int:
 
 def search_knowledge(
     question: str,
-    n_results: int = 3,
+    n_results: int = DEFAULT_N_RESULTS,
 ) -> list[dict]:
     """Recupera fragmentos relevantes para una pregunta."""
     if not question.strip():

@@ -87,6 +87,7 @@ kubeconfig
 .directory
 .nfs*
 *.bak
+*.save
 *.tmp
 *.temp
 *.orig

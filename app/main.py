@@ -8,6 +8,25 @@ from app.services.knowledge_base import (
     index_documents,
     search_knowledge,
 )
+from app.services.grounding_validator import validate_answer
+from app.services.llm import (
+    generate_answer,
+    InvalidGenerationRequestError,
+    OllamaConnectionError,
+    OllamaResponseError,
+    OllamaTimeoutError,
+)
+
+
+ABSTENTION_MESSAGE = (
+    "No he encontrado evidencia documental "
+    "suficientemente relevante para responder "
+    "a tu consulta.\n\n"
+    "No puedo proporcionar instrucciones "
+    "sin respaldo documental. Consulta al "
+    "equipo responsable si necesita "
+    "información adicional."
+)
 
 
 st.set_page_config(
@@ -136,57 +155,60 @@ if question:
                 # 3. Preparar respuesta documental.
                 if relevant:
 
-                    answer = (
-                        "He encontrado fragmentos relacionados "
-                        "con tu consulta en la documentación.\n\n"
-                        "Para mantener el modo estricto, te muestro "
-                        "el contenido original sin reformularlo "
-                        "ni añadir instrucciones externas."
-                    )
+                    answer = generate_answer(question, relevant)
 
-                    evidence = [
-                        {
-                            "source": item["source"],
-                            "text": item["text"],
-                        }
-                        for item in relevant
-                    ]
+                    # TASK 06.3.2 — Validación determinista de anclaje (fail closed).
+                    validation = None
+                    try:
+                        validation = validate_answer(question, answer, relevant)
+                    except Exception:
+                        validation = None
+
+                    if (
+                        validation is not None
+                        and validation.supported
+                        and validation.matched_text
+                    ):
+                        # Respuesta verificada: solo se muestra el fragmento
+                        # original respaldado por la evidencia aceptada.
+                        answer = validation.matched_text
+                        evidence = []
+                    else:
+                        answer = ABSTENTION_MESSAGE
+                        evidence = []
 
                 else:
 
-                    answer = (
-                        "No he encontrado evidencia documental "
-                        "suficientemente relevante para responder "
-                        "a tu consulta.\n\n"
-                        "No puedo proporcionar instrucciones "
-                        "sin respaldo documental. Consulta al "
-                        "equipo responsable si necesitas "
-                        "información adicional."
-                    )
-
+                    answer = ABSTENTION_MESSAGE
                     evidence = []
 
-            # 4. Mostrar respuesta.
-            st.markdown(answer)
-
-            if evidence:
-                with st.expander("Evidencias documentales"):
-                    for item in evidence:
-
-                        st.caption(
-                            f"Fuente: {item['source']}"
-                        )
-
-                        st.text(item["text"])
-
-            # 5. Guardar historial visual.
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": answer,
-                    "evidence": evidence,
-                }
+        except OllamaConnectionError:
+            answer = (
+                "No se pudo completar la respuesta en este momento. "
+                "Comprueba que Ollama está disponible y vuelve a intentarlo."
             )
+            evidence = []
+
+        except OllamaTimeoutError:
+            answer = (
+                "La generación de la respuesta tardó demasiado de tiempo. "
+                "Vuelve a intentarlo."
+            )
+            evidence = []
+
+        except OllamaResponseError:
+            answer = (
+                "La respuesta del asistente no pudo ser procesada. "
+                "Vuelve a intentarlo."
+            )
+            evidence = []
+
+        except InvalidGenerationRequestError:
+            answer = (
+                "No se pudo generar una respuesta por falta de información. "
+                "Consulta al equipo responsable si necesitas información adicional."
+            )
+            evidence = []
 
         except Exception as error:
 
@@ -198,3 +220,53 @@ if question:
             st.caption(
                 f"Detalle técnico: {error}"
             )
+
+            answer = (
+                "No se pudo completar la respuesta en este momento. "
+                "Comprueba Ollama y la base de conocimiento."
+            )
+            evidence = []
+
+        # 4. Mostrar respuesta.
+        st.markdown(answer)
+
+        if evidence:
+            with st.expander("Evidencias documentales"):
+                for item in evidence:
+
+                    st.caption(
+                        f"Fuente: {item['source']}"
+                    )
+
+                    st.text(item["text"])
+
+        # 4b. Trazabilidad interna / auditoría.
+        with st.expander(
+            "🔍 Trazabilidad interna y auditoría",
+            expanded=False,
+        ):
+            for item in relevant:
+                st.caption(
+                    f"Fuente: {item['source']}"
+                )
+
+                st.caption(
+                    f"Distancia: {item['distance']}"
+                )
+
+                st.text(item["text"])
+
+            if not relevant:
+                st.caption(
+                    "Sin fragmentos dentro del umbral de "
+                    f"{DEFAULT_MAX_DISTANCE}."
+                )
+
+        # 5. Guardar historial visual.
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": answer,
+                "evidence": evidence,
+            }
+        )

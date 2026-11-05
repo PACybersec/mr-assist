@@ -1,10 +1,10 @@
 # Mr.Assist — Local AI IT Operations Assistant
 
-Mr.Assist is a local AI-powered IT operations assistant built with Python, Streamlit, Ollama and ChromaDB. It uses retrieval over a knowledge base of documented IT procedures to support troubleshooting, and presents retrieved evidence to the user.
+Mr.Assist is a local AI-powered IT operations assistant built with Python, Streamlit, Ollama and ChromaDB. It uses retrieval over a knowledge base of documented IT procedures to support troubleshooting, and makes retrieved evidence available for optional development traceability.
 
 ## Current Status
 
-Mr.Assist is currently a **retrieval-focused prototype**, not a complete generative RAG system.
+Mr.Assist is currently an **experimental 0.5 prototype** of an IT assistant based on RAG, with a retrieval-focused core and an experimental generative component. Validation so far is **limited**, and no readiness for production is claimed.
 
 **Implemented:**
 
@@ -12,23 +12,61 @@ Mr.Assist is currently a **retrieval-focused prototype**, not a complete generat
 - ChromaDB persistent vector store.
 - Ollama embeddings with `nomic-embed-text`.
 - Document retrieval.
-- Semantic distance filtering with a threshold of `0.35`.
-- Strict mode: static response including retrieved evidence when fragments are accepted, or static abstention when none are accepted.
+- Semantic distance filtering with a maximum distance of `0.40`.
+- Deterministic extractive answering: retrieval, filtering, selection of an exact span from the original evidence, and fail-closed validation; responds with an extractive answer or abstains.
+- Strict mode: deterministic extractive response from validated evidence, or abstention.
 
-**Planned:**
+**Experimental generation:**
 
-- Response generation with a local LLM through Ollama, using retrieved documentation and conversation history, with strict abstention safeguards. This is **not implemented** in the current version.
+- Response generation with a local LLM through Ollama (qwen3:0.6b) is implemented as an experiment and is **not part of the default flow**; deterministic extractive answering remains the default.
 
-Last confirmed test run: **16 passed**, with 1 unrelated ChromaDB deprecation warning, on November 1, 2026.
+**Current parameters:**
+
+- Maximum distance: `0.40`.
+- Lexical content coverage: `0.75`.
+
+**Historical status of tests:**
+
+- Automated regression (historical): last reported run **182 passed, 1 warning** (reported; an earlier documented figure of **169 passed** also exists and the discrepancy is not reconciled). No fresh run was executed during this documentation change.
+- Isolated evaluation (historical): **11 passed, 3 failed** (12 functional cases and 2 auxiliary checks); failures A1, A3 and A4.
+
+- Manual tests in Firefox (historical, communicated by the user): A1 (browser error) false rejection; A2 (single user) correct answer; A3 (service state) correct answer, retains "si se tienen permisos"; A4 (first step) false rejection; denied question: expected abstention; RTO not documented: correct abstention; override attempt plus firewall: safe abstention.
+
+- Manual visual review of the traceability control (reported by the user): enabling and disabling it did not alter answers and did not duplicate messages.
+
+These figures are historical reports and are not results of a run executed during this documentation change.
+
+Note: A3 failed in the isolated historical evaluation and worked in the manual Firefox test communicated by the user; the difference was not investigated further here and the isolated failure was not treated as resolved.
+
+## Current Verification
+
+- Date: 2026-11-05.
+- Environment of this run: Python 3.14.9.
+- Full suite: **196 tests; 193 passed, 3 failed, 1 warning; 0 errors, 0 skipped, 0 xfailed. Exit code 1.**
+
+Breakdown:
+
+- `tests/test_functional_evaluation.py`: **11 passed, 3 failed**.
+- Rest of the suite: **182 passed**.
+- Failures A1/A3/A4: the selector returned `None` (abstention) where the cases expected documentary answers.
+- ChromaDB/opentelemetry deprecation warning.
+
+Limits:
+
+- Functional evaluation with synthetic evidence.
+- External services simulated in the relevant tests.
+- This run did not verify real retrieval with embeddings and Ollama, nor does it constitute an end-to-end test with those services.
+- A3 continues to differ from the historically communicated manual result.
+- Experimental 0.x state with known failures; no production fitness declared.
 
 ## Features
 
 - **Local embeddings:** Ollama with the `nomic-embed-text` model.
 - **Vector storage:** ChromaDB persistent client, cosine distance.
 - **Retrieval:** semantic search over indexed Markdown chunks.
-- **Relevance filtering:** distance threshold (`0.35` by default; pending calibration).
-- **Strict mode:** static response from accepted evidence, or abstention.
-- **Source transparency:** retrieved evidence is displayed to the user.
+- **Relevance filtering:** distance threshold (`0.40` maximum distance; lexical content coverage `0.75`).
+- **Strict mode:** deterministic extractive response from validated evidence, or abstention.
+- **Source transparency:** optional development traceability showing source, distance and fragment; disabled by default and distinct from the manipulation-signal log. The traceability control only shows or hides the evidence in the interface; it does not disable its processing, its storage, or the manipulation-signal log.
 - **Knowledge base management:** re-index documents from the Streamlit interface.
 - **Conversation history:** messages kept in the Streamlit session state.
 
@@ -36,7 +74,7 @@ Last confirmed test run: **16 passed**, with 1 unrelated ChromaDB deprecation wa
 
 The current flow is:
 
-`ingest → chunk → embed → store → retrieve → filter → respond with static evidence or abstain`
+`ingest → chunk → embed → store → retrieve → filter → select → validate → respond with a documentary answer or abstain`
 
 1. **Knowledge ingestion:** Markdown IT procedures from `app/data/knowledge/`.
 2. **Chunking:** simple paragraph-based splitting with a maximum of 800 characters.
@@ -44,7 +82,7 @@ The current flow is:
 4. **Storage:** ChromaDB collection `it_knowledge`, cosine distance.
 5. **Retrieval:** embed the user question and query the collection.
 6. **Filtering:** discard retrieved fragments whose distance exceeds the configured threshold.
-7. **Response:** return a static response including the accepted evidence, or abstain.
+7. **Response:** return the validated extractive answer (exact original span), or abstain.
 
 ## Technology Stack
 
@@ -59,7 +97,7 @@ The current flow is:
 
 ### Prerequisites
 
-- Python 3.14.8 (used for the latest verified test run; other Python versions have not been validated).
+- Python 3.14.9 (used for the TASK 20 validation run; an earlier historical run used Python 3.14.8; other Python versions have not been validated).
 - Ollama installed and running.
 - Pull the current embedding model:
 
@@ -103,33 +141,46 @@ The current example knowledge base covers troubleshooting an unavailable interna
 
 ## Evaluation
 
-Retrieval evaluation uses cases R01–R05. The evaluator checks expected evidence and explicitly forbidden evidence.
+Retrieval evaluation uses the **R01–R05** cases of the retrieval-focused evaluator (`tests/test_retrieval_evaluation.py`), which checks expected evidence and explicitly forbidden evidence.
+
+Functional evaluation uses the **A, B and C groups** of the full-flow evaluator (`tests/test_functional_evaluation.py`), which checks documented answers, abstentions and adversarial cases.
 
 - The suite includes relevance-filtering tests and retrieval evaluation tests.
-- Last confirmed run: **16 passed**, with 1 unrelated ChromaDB deprecation warning, on November 1, 2026.
-- The evaluator relies on textual matching, not semantic understanding, and does not validate abstention behavior in the running application.
+- The last reported regression run was **182 passed, 1 warning** (reported; see Current Status for the discrepancy with the earlier documented figure of **169 passed**).
+- The evaluators rely on textual matching, not semantic understanding, and do not validate abstention behavior in the running application.
 
 ## Security Considerations
 
 - Designed for local use.
 - Retrieved documentation is treated as reference material rather than trusted instructions.
-- No complete prompt-injection defense has been implemented and validated yet.
+- The deterministic prompt-injection filter is narrow and experimental; the local manipulation-signal log is not a general prompt-injection protection.
+
+### Local manipulation-signal log
+
+- The local manipulation-signal log records explicit instruction-override signals.
+- It is independent of the optional visual traceability of evidence.
+- Path: `app/data/security_events/manipulation_signals.jsonl`.
+- Each event stores a UTC timestamp, UUID, category `instruction_override`, matched rules and detector version; the question text is not stored.
+- Rotation: 1 MiB maximum with 3 backups.
+- Currently limited to a single process.
+- This is a rule-based signal log; it is not a general prompt-injection defense.
 
 > [!WARNING]
 > Do not commit or publish credentials, passwords, API keys, tokens, private logs, personal information, or confidential company documentation to the repository.
 
 ## Limitations
 
-- Response generation with a local LLM is not implemented.
-- The retrieval threshold (`0.35`) is pending calibration.
+- Response generation with a local LLM is implemented experimentally (qwen3:0.6b) but is not part of the default flow.
+- The retrieval distance threshold is set to `0.40` (current parameter; no general quality calibration is claimed).
 - Chunking is simple (paragraph-based, maximum 800 characters).
 - Evaluation relies on textual matching, not semantic understanding.
+- The fail-closed behavior applies to the deterministic extractive flow and the evaluated cases; it is not presented as a general security or correctness guarantee.
 - The project is not production-ready.
 
 ## Roadmap
 
-- Implement local response generation through Ollama.
-- Calibrate the retrieval threshold.
+- Integrate the experimental local response generation (qwen3:0.6b) into the default flow, subject to further evaluation and a later explicit decision.
+- Continue evaluation of the retrieval threshold and answer quality.
 - Add end-to-end RAG tests.
 
 ## Disclaimer
@@ -137,5 +188,8 @@ Retrieval evaluation uses cases R01–R05. The evaluator checks expected evidenc
 This project is for educational and portfolio purposes. Responses should be reviewed before being used for operational decisions.
 
 ## Author
+
+**Pablo Acosta Arango**
+Creator and developer of Mr.Assist.
 
 Cybersecurity enthusiast exploring local AI, IT operations, security engineering and practical automation.

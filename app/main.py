@@ -2,20 +2,15 @@
 import streamlit as st
 
 from app.core.config import DEFAULT_MAX_DISTANCE, DEFAULT_N_RESULTS
+from app.services.extractive_answering import select_documentary_answer
+from app.services.grounding_validator import validate_answer
 from app.services.knowledge_base import (
     collection,
     filter_relevant_matches,
     index_documents,
     search_knowledge,
 )
-from app.services.grounding_validator import validate_answer
-from app.services.llm import (
-    generate_answer,
-    InvalidGenerationRequestError,
-    OllamaConnectionError,
-    OllamaResponseError,
-    OllamaTimeoutError,
-)
+from app.services.manipulation_signals import record_suspicious_submission
 
 
 ABSTENTION_MESSAGE = (
@@ -81,6 +76,13 @@ with st.sidebar:
             )
             st.caption(f"Detalle técnico: {error}")
 
+    st.divider()
+
+    st.checkbox(
+        "Mostrar trazabilidad interna (desarrollo)",
+        key="show_internal_audit",
+    )
+
 
 # --------------------------------------------------
 # 2. HISTORIAL VISUAL
@@ -91,14 +93,20 @@ if "messages" not in st.session_state:
 
 
 def display_message(message: dict) -> None:
-    """Muestra un mensaje y su evidencia documental."""
+    """Muestra el contenido y, solo en modo desarrollo, su evidencia."""
 
     st.markdown(message["content"])
 
-    evidence = message.get("evidence", [])
+    if not st.session_state.get("show_internal_audit", False):
+        return
+
+    evidence = message.get(
+        "audit_evidence",
+        message.get("evidence", []),
+    )
 
     if evidence:
-        with st.expander("Evidencias documentales"):
+        with st.expander("Evidencias documentales (desarrollo)"):
             for item in evidence:
                 st.caption(
                     f"Fuente: {item['source']}"
@@ -123,6 +131,13 @@ question = st.chat_input("Describe tu consulta IT...")
 
 if question:
 
+    # TASK 16 — registro local de señales de manipulación (fail-safe).
+    try:
+        record_suspicious_submission(question)
+    except Exception:
+        # Los fallos de detección/escritura no interrumpen la recuperación ni respuesta.
+        pass
+
     st.session_state.messages.append(
         {
             "role": "user",
@@ -134,6 +149,10 @@ if question:
         st.markdown(question)
 
     with st.chat_message("assistant"):
+
+        relevant = []
+        candidate = None
+        validation = None
 
         try:
             with st.spinner(
@@ -152,15 +171,28 @@ if question:
                     max_distance=DEFAULT_MAX_DISTANCE,
                 )
 
-                # 3. Preparar respuesta documental.
-                if relevant:
+            # 3. Selección extractiva determinista.
+            if not relevant:
+                answer = ABSTENTION_MESSAGE
+            else:
+                try:
+                    candidate = select_documentary_answer(
+                        question,
+                        relevant,
+                    )
+                except Exception:
+                    candidate = None
 
-                    answer = generate_answer(question, relevant)
-
-                    # TASK 06.3.2 — Validación determinista de anclaje (fail closed).
-                    validation = None
+                if candidate is None:
+                    answer = ABSTENTION_MESSAGE
+                else:
+                    # 4. Validación determinista de anclaje (fail closed).
                     try:
-                        validation = validate_answer(question, answer, relevant)
+                        validation = validate_answer(
+                            question,
+                            candidate,
+                            relevant,
+                        )
                     except Exception:
                         validation = None
 
@@ -169,104 +201,48 @@ if question:
                         and validation.supported
                         and validation.matched_text
                     ):
-                        # Respuesta verificada: solo se muestra el fragmento
-                        # original respaldado por la evidencia aceptada.
+                        # Solo se muestra el texto original validado.
                         answer = validation.matched_text
-                        evidence = []
                     else:
                         answer = ABSTENTION_MESSAGE
-                        evidence = []
 
-                else:
+        except Exception:
+            # Cualquier fallo de recuperación, selección o validación
+            # se resuelve con abstención segura.
+            answer = ABSTENTION_MESSAGE
 
-                    answer = ABSTENTION_MESSAGE
-                    evidence = []
-
-        except OllamaConnectionError:
-            answer = (
-                "No se pudo completar la respuesta en este momento. "
-                "Comprueba que Ollama está disponible y vuelve a intentarlo."
-            )
-            evidence = []
-
-        except OllamaTimeoutError:
-            answer = (
-                "La generación de la respuesta tardó demasiado de tiempo. "
-                "Vuelve a intentarlo."
-            )
-            evidence = []
-
-        except OllamaResponseError:
-            answer = (
-                "La respuesta del asistente no pudo ser procesada. "
-                "Vuelve a intentarlo."
-            )
-            evidence = []
-
-        except InvalidGenerationRequestError:
-            answer = (
-                "No se pudo generar una respuesta por falta de información. "
-                "Consulta al equipo responsable si necesitas información adicional."
-            )
-            evidence = []
-
-        except Exception as error:
-
-            st.error(
-                "No se pudo completar la consulta. "
-                "Comprueba Ollama y la base de conocimiento."
-            )
-
-            st.caption(
-                f"Detalle técnico: {error}"
-            )
-
-            answer = (
-                "No se pudo completar la respuesta en este momento. "
-                "Comprueba Ollama y la base de conocimiento."
-            )
-            evidence = []
-
-        # 4. Mostrar respuesta.
+        # 5. Mostrar respuesta verificada o abstención.
         st.markdown(answer)
 
-        if evidence:
-            with st.expander("Evidencias documentales"):
-                for item in evidence:
+        # 5b. Trazabilidad interna solo en modo desarrollo.
+        if st.session_state.get("show_internal_audit", False):
+            with st.expander(
+                "🔍 Trazabilidad interna y auditoría",
+                expanded=False,
+            ):
+                if relevant:
+                    for item in relevant:
+                        st.caption(
+                            f"Fuente: {item['source']}"
+                        )
 
+                        st.caption(
+                            f"Distancia: {item['distance']}"
+                        )
+
+                        st.text(item["text"])
+                else:
                     st.caption(
-                        f"Fuente: {item['source']}"
+                        "Sin fragmentos dentro del umbral de "
+                        f"{DEFAULT_MAX_DISTANCE}."
                     )
 
-                    st.text(item["text"])
-
-        # 4b. Trazabilidad interna / auditoría.
-        with st.expander(
-            "🔍 Trazabilidad interna y auditoría",
-            expanded=False,
-        ):
-            for item in relevant:
-                st.caption(
-                    f"Fuente: {item['source']}"
-                )
-
-                st.caption(
-                    f"Distancia: {item['distance']}"
-                )
-
-                st.text(item["text"])
-
-            if not relevant:
-                st.caption(
-                    "Sin fragmentos dentro del umbral de "
-                    f"{DEFAULT_MAX_DISTANCE}."
-                )
-
-        # 5. Guardar historial visual.
+        # 6. Guardar historial visual.
         st.session_state.messages.append(
             {
                 "role": "assistant",
                 "content": answer,
-                "evidence": evidence,
+                "evidence": [],
+                "audit_evidence": relevant,
             }
         )

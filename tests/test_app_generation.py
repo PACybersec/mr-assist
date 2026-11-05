@@ -1,3 +1,9 @@
+"""AppTest tests for the extractive default answer path.
+
+This file previously asserted that LLM generation was the default Streamlit
+path. The default is now deterministic extractive selection; LLM service
+coverage remains in tests/test_llm.py.
+"""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -5,15 +11,11 @@ from types import SimpleNamespace
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from app.core.config import DEFAULT_MAX_DISTANCE
+from app.services import extractive_answering as extractive_module
 from app.services import grounding_validator as grounding_module
 from app.services import knowledge_base as kb
 from app.services import llm as llm_module
-from app.services.llm import (
-    InvalidGenerationRequestError,
-    OllamaConnectionError,
-    OllamaResponseError,
-    OllamaTimeoutError,
-)
 
 
 APP_PATH = str(Path(__file__).resolve().parents[1] / "app" / "main.py")
@@ -27,21 +29,6 @@ ABSTENTION_MESSAGE = (
     "sin respaldo documental. Consulta al "
     "equipo responsable si necesita "
     "información adicional."
-)
-
-SAFE_CONNECTION_MESSAGE = (
-    "No se pudo completar la respuesta en este momento. "
-    "Comprueba que Ollama está disponible y vuelve a intentarlo."
-)
-
-SAFE_TIMEOUT_MESSAGE = (
-    "La generación de la respuesta tardó demasiado de tiempo. "
-    "Vuelve a intentarlo."
-)
-
-SAFE_RESPONSE_MESSAGE = (
-    "La respuesta del asistente no pudo ser procesada. "
-    "Vuelve a intentarlo."
 )
 
 
@@ -71,18 +58,21 @@ def _accepted_matches(monkeypatch, matches: list) -> None:
         lambda found, max_distance=None: [
             item
             for item in found
-            if item.get("distance", float("inf")) <= (max_distance or 0.35)
+            if item.get("distance", float("inf"))
+            <= (
+                max_distance
+                if max_distance is not None
+                else DEFAULT_MAX_DISTANCE
+            )
         ],
     )
 
 
-def _fake_generate(monkeypatch, response=None, error=None) -> list:
+def _fake_generate(monkeypatch, response=None) -> list:
     calls: list = []
 
     def _generate(question: str, evidence: list) -> str:
         calls.append((question, list(evidence)))
-        if error is not None:
-            raise error
         return response
 
     monkeypatch.setattr(llm_module, "generate_answer", _generate)
@@ -114,24 +104,40 @@ def _markdown_values(app: AppTest) -> list:
     return [element.value for element in app.markdown]
 
 
-def test_accepted_evidence_invokes_generation(app: AppTest, monkeypatch):
+def test_accepted_evidence_invokes_extractive_selection(app: AppTest, monkeypatch):
     matches = [
         {
-            "text": "Comprobar mediante las herramientas autorizadas.",
+            "text": "El servidor está caído.",
             "source": "procedimientos_it.md",
             "distance": 0.2,
         }
     ]
     _accepted_matches(monkeypatch, matches)
-    calls = _fake_generate(monkeypatch, response="Respuesta generada.")
+
+    select_calls: list = []
+
+    def _select(question: str, evidence: list) -> str:
+        select_calls.append((question, list(evidence)))
+        return "El servidor está caído."
+
+    monkeypatch.setattr(extractive_module, "select_documentary_answer", _select)
+    validate_calls = _fake_validate(
+        monkeypatch,
+        supported=True,
+        matched_text="El servidor está caído.",
+    )
 
     app.run()
-    app.chat_input[0].set_value("¿Cómo comprobar la conectividad?")
+    app.chat_input[0].set_value("¿El servidor está caído?")
     app.run()
 
-    assert len(calls) == 1
-    assert calls[0][0] == "¿Cómo comprobar la conectividad?"
-    assert calls[0][1] == matches
+    assert len(select_calls) == 1
+    assert select_calls[0][0] == "¿El servidor está caído?"
+    assert select_calls[0][1] == matches
+    assert len(validate_calls) == 1
+    assert validate_calls[0][1] == "El servidor está caído."
+    assert validate_calls[0][2] == matches
+    assert "El servidor está caído." in _markdown_values(app)
     assert len(app.exception) == 0
 
 
@@ -165,113 +171,47 @@ def test_no_accepted_evidence_skips_generation(app: AppTest, monkeypatch):
     assert ABSTENTION_MESSAGE in _markdown_values(app)
 
 
-def test_successful_generation_displays_answer(app: AppTest, monkeypatch):
+def test_retrieval_exception_displays_safe_abstention(app: AppTest, monkeypatch):
+    def _raise(*args, **kwargs):
+        raise RuntimeError("fallo simulado de recuperación")
+
+    monkeypatch.setattr(kb, "search_knowledge", _raise)
+
+    app.run()
+    app.chat_input[0].set_value("¿El servidor está caído?")
+    app.run()
+
+    markdown_values = _markdown_values(app)
+    assert ABSTENTION_MESSAGE in markdown_values
+    assert "fallo simulado de recuperación" not in "\n".join(markdown_values)
+    assert len(app.exception) == 0
+    assert len(app.session_state["messages"]) == 2
+
+
+def test_filter_exception_displays_safe_abstention(app: AppTest, monkeypatch):
     matches = [
         {
-            "text": "Comprobar mediante las herramientas autorizadas.",
+            "text": "El servidor está caído.",
             "source": "procedimientos_it.md",
             "distance": 0.2,
         }
     ]
-    _accepted_matches(monkeypatch, matches)
-    _fake_generate(monkeypatch, response="Respuesta generada.")
+    monkeypatch.setattr(kb, "search_knowledge", lambda *args, **kwargs: list(matches))
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("fallo simulado del filtro")
+
+    monkeypatch.setattr(kb, "filter_relevant_matches", _raise)
 
     app.run()
-    app.chat_input[0].set_value("¿Cómo comprobar la conectividad?")
-    app.run()
-
-    markdown_values = _markdown_values(app)
-    assert "Respuesta generada." in markdown_values
-    assert len(app.exception) == 0
-
-
-def test_connection_failure_displays_safe_message(app: AppTest, monkeypatch):
-    _accepted_matches(
-        monkeypatch,
-        [
-            {
-                "text": "Comprobar mediante las herramientas autorizadas.",
-                "source": "procedimientos_it.md",
-                "distance": 0.2,
-            }
-        ],
-    )
-    _fake_generate(monkeypatch, error=OllamaConnectionError("ollama down"))
-
-    app.run()
-    app.chat_input[0].set_value("¿Cómo comprobar la conectividad?")
+    app.chat_input[0].set_value("¿El servidor está caído?")
     app.run()
 
     markdown_values = _markdown_values(app)
-    assert SAFE_CONNECTION_MESSAGE in markdown_values
+    assert ABSTENTION_MESSAGE in markdown_values
+    assert "fallo simulado del filtro" not in "\n".join(markdown_values)
     assert len(app.exception) == 0
-
-
-def test_timeout_displays_safe_message(app: AppTest, monkeypatch):
-    _accepted_matches(
-        monkeypatch,
-        [
-            {
-                "text": "Comprobar mediante las herramientas autorizadas.",
-                "source": "procedimientos_it.md",
-                "distance": 0.2,
-            }
-        ],
-    )
-    _fake_generate(monkeypatch, error=OllamaTimeoutError("timeout"))
-
-    app.run()
-    app.chat_input[0].set_value("¿Cómo comprobar la conectividad?")
-    app.run()
-
-    markdown_values = _markdown_values(app)
-    assert SAFE_TIMEOUT_MESSAGE in markdown_values
-    assert len(app.exception) == 0
-
-
-def test_invalid_response_displays_safe_message(app: AppTest, monkeypatch):
-    _accepted_matches(
-        monkeypatch,
-        [
-            {
-                "text": "Comprobar mediante las herramientas autorizadas.",
-                "source": "procedimientos_it.md",
-                "distance": 0.2,
-            }
-        ],
-    )
-    _fake_generate(monkeypatch, error=OllamaResponseError("empty response"))
-
-    app.run()
-    app.chat_input[0].set_value("¿Cómo comprobar la conectividad?")
-    app.run()
-
-    markdown_values = _markdown_values(app)
-    assert SAFE_RESPONSE_MESSAGE in markdown_values
-    assert len(app.exception) == 0
-
-
-def test_existing_chat_state_remains_functional(app: AppTest, monkeypatch):
-    matches = [
-        {
-            "text": "Comprobar mediante las herramientas autorizadas.",
-            "source": "procedimientos_it.md",
-            "distance": 0.2,
-        }
-    ]
-    _accepted_matches(monkeypatch, matches)
-    _fake_generate(monkeypatch, response="Respuesta generada.")
-
-    app.run()
-    app.chat_input[0].set_value("¿Cómo comprobar la conectividad?")
-    app.run()
-
-    messages = app.session_state["messages"]
-    assert len(messages) == 2
-    assert messages[0]["role"] == "user"
-    assert messages[1]["role"] == "assistant"
-    assert messages[1]["content"] == "Respuesta generada."
-    assert len(app.exception) == 0
+    assert len(app.session_state["messages"]) == 2
 
 
 def test_supported_answer_displays_only_matched_text(app: AppTest, monkeypatch):
@@ -284,7 +224,11 @@ def test_supported_answer_displays_only_matched_text(app: AppTest, monkeypatch):
     ]
     _accepted_matches(monkeypatch, matches)
     _fake_generate(monkeypatch, response="Respuesta generada.")
-    validate_calls = _fake_validate(monkeypatch, supported=True, matched_text="El servidor está caído.")
+    validate_calls = _fake_validate(
+        monkeypatch,
+        supported=True,
+        matched_text="El servidor está caído.",
+    )
 
     app.run()
     app.chat_input[0].set_value("¿El servidor está caído?")
@@ -300,33 +244,10 @@ def test_supported_answer_displays_only_matched_text(app: AppTest, monkeypatch):
     assert len(app.exception) == 0
 
 
-def test_unsupported_answer_displays_safe_abstention(app: AppTest, monkeypatch):
-    matches = [
-        {
-            "text": "El servidor está caído.",
-            "source": "procedimientos_it.md",
-            "distance": 0.2,
-        }
-    ]
-    _accepted_matches(monkeypatch, matches)
-    calls = _fake_generate(monkeypatch, response="Respuesta generada.")
-    _fake_validate(monkeypatch, supported=False)
-
-    app.run()
-    app.chat_input[0].set_value("¿El servidor está caído?")
-    app.run()
-
-    markdown_values = _markdown_values(app)
-    assert ABSTENTION_MESSAGE in markdown_values
-    assert "Respuesta generada." not in markdown_values
-    assert len(calls) == 1
-
-    messages = app.session_state["messages"]
-    assert messages[1]["content"] == ABSTENTION_MESSAGE
-    assert len(app.exception) == 0
-
-
-def test_supported_answer_with_fabricated_text_displays_abstention(app: AppTest, monkeypatch):
+def test_supported_answer_with_fabricated_text_displays_abstention(
+    app: AppTest,
+    monkeypatch,
+):
     matches = [
         {
             "text": "El servidor está caído.",
@@ -391,9 +312,16 @@ def test_invented_shell_command_displays_abstention(app: AppTest, monkeypatch):
     assert len(app.exception) == 0
 
 
-def test_no_accepted_evidence_skips_generation_and_validation(app: AppTest, monkeypatch):
+def test_no_accepted_evidence_skips_generation_and_validation(
+    app: AppTest,
+    monkeypatch,
+):
     calls = _fake_generate(monkeypatch, response="Respuesta generada.")
-    validate_calls = _fake_validate(monkeypatch, supported=True, matched_text="Respuesta generada.")
+    validate_calls = _fake_validate(
+        monkeypatch,
+        supported=True,
+        matched_text="Respuesta generada.",
+    )
 
     app.run()
     app.chat_input[0].set_value("¿Qué red?")
@@ -441,7 +369,11 @@ def test_supported_answer_contains_no_internal_data(app: AppTest, monkeypatch):
     ]
     _accepted_matches(monkeypatch, matches)
     _fake_generate(monkeypatch, response="Respuesta generada.")
-    _fake_validate(monkeypatch, supported=True, matched_text="El servidor está caído.")
+    _fake_validate(
+        monkeypatch,
+        supported=True,
+        matched_text="El servidor está caído.",
+    )
 
     app.run()
     app.chat_input[0].set_value("¿El servidor está caído?")

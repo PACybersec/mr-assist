@@ -69,6 +69,65 @@ def _normalize(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+def _normalize_with_offsets(text: str) -> tuple[str, list[int]]:
+    """Normalize text like _normalize and map each normalized char to its origin.
+
+    Returns a tuple ``(normalized_text, offsets)`` where each character of the
+    normalized text is paired with the index of its originating character in
+    ``text``. Whitespace runs collapse to a single normalized space mapped to
+    the first whitespace position of the run. Case-folded characters keep the
+    offset of their original character, including multi-character expansions
+    such as ``ß`` → ``ss``.
+    """
+    normalized: list[str] = []
+    offsets: list[int] = []
+    pending_space = False
+    started = False
+
+    for index, char in enumerate(text):
+        if char.isspace():
+            if started:
+                pending_space = True
+            continue
+        if pending_space:
+            normalized.append(" ")
+            offsets.append(index)
+            pending_space = False
+        for folded in char.casefold():
+            normalized.append(folded)
+            offsets.append(index)
+        started = True
+
+    return "".join(normalized), offsets
+
+
+def _extract_original_span(text: str, normalized_answer: str) -> str | None:
+    """Recover the exact original substring matching the normalized answer.
+
+    Returns ``None`` when the span cannot be located or verified to round-trip
+    exactly through normalization. Never guesses or substitutes input text.
+    """
+    normalized_text, offsets = _normalize_with_offsets(text)
+    position = normalized_text.find(normalized_answer)
+    if position == -1:
+        return None
+
+    start = offsets[position]
+    end = offsets[position + len(normalized_answer) - 1] + 1
+    span = text[start:end]
+
+    # Verify the recovered span round-trips exactly through normalization and
+    # remains an exact substring of the source text. Never accept a span that
+    # cannot be independently verified; span reconstruction failures fail
+    # closed instead of substituting the candidate text.
+    if not span:
+        return None
+    if _normalize(span) != normalized_answer:
+        return None
+
+    return span
+
+
 def _contains_injection(text: str) -> bool:
     """Deterministic check for obvious prompt-injection patterns."""
     return any(pattern.search(text) for pattern in _INJECTION_PATTERNS)
@@ -85,7 +144,7 @@ def validate_answer(question: str, answer: str, evidence: list) -> GroundingResu
 
     Returns:
         GroundingResult with ``supported``, ``reason`` and, on success, the
-        original matched evidence text in ``matched_text``.
+        exact original matched span in ``matched_text``.
     """
     try:
         if not isinstance(question, str) or not question.strip():
@@ -115,10 +174,18 @@ def validate_answer(question: str, answer: str, evidence: list) -> GroundingResu
             text = item.get("text")
             normalized_evidence = _normalize(text)
             if normalized_answer in normalized_evidence:
+                span = _extract_original_span(text, normalized_answer)
+                if span is None:
+                    # Span reconstruction failed verification; fail closed.
+                    # Never substitute the candidate text for an unverified span.
+                    return GroundingResult(
+                        supported=False,
+                        reason="span_recovery_failed",
+                    )
                 return GroundingResult(
                     supported=True,
                     reason="supported",
-                    matched_text=text,
+                    matched_text=span,
                 )
 
         return GroundingResult(

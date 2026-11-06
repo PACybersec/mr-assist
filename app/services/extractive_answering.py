@@ -74,6 +74,46 @@ _GENERIC_QUESTION_FRAME_WORDS = frozenset(
     """.split()
 )
 
+# Generic context terms describe the phase or situation framing of the inquiry
+# (e.g. the diagnosis phase, the internal application context, the affected-user
+# context) rather than the answer content that must appear in the evidence.
+# They are compared by stem because inflections reduce to the same stem.
+_GENERIC_CONTEXT_STEMS = frozenset(
+    {
+        "diagnostic",  # diagnosis phase context: "durante el diagnostico"
+        "intern",      # internal context: "aplicacion interna"
+        "aplic",       # application context: "aplicacion"
+        "usuari",      # affected-user context: "un usuario no puede acceder"
+    }
+)
+
+# Generic question-framing verbs describe how the question is phrased or how
+# the situation is reported (e.g. "parece", "aparece") rather than naming the IT
+# content that must be present in the evidence. Compared by stem because
+# inflections reduce to the same stem.
+_GENERIC_QUESTION_FRAME_VERBS = frozenset(
+    {
+        "parec",  # parece
+        "aparec",  # aparece
+        "acced",  # accede / accede (acceder)
+    }
+)
+
+# Ordinal step references (primera, segundo, ...) select numbered candidates by
+# their list marker instead of acting as content tokens.
+_ORDINAL_STEP_PREFIXES: tuple[tuple[str, int], ...] = (
+    ("prim", 1),
+    ("segund", 2),
+    ("terc", 3),
+    ("cuart", 4),
+    ("quint", 5),
+    ("sexten", 6),
+    ("septim", 7),
+    ("octav", 8),
+    ("noven", 9),
+    ("decim", 10),
+)
+
 _SUFFIXES = (
     "aciones",
     "acion",
@@ -290,11 +330,11 @@ def _tokens_match(left: str, right: str) -> bool:
 # pronominal tokens do not become spurious requirements in the coverage
 # denominator. Negations ("no ...") and all other content tokens are preserved.
 _PRONOUNIAL_AFFECT_RE = re.compile(
-    r"\bse\s+ve\s+afectad[oa]s?\b",
+    r"\bse\s+(?:ve|ven)\s+afectad[oa]s?\b",
     re.IGNORECASE,
 )
 _PRONOUNIAL_AFFECT_NEGATED_RE = re.compile(
-    r"\b(?:no|nunca|jamas|tampoco)\s+se\s+ve\s+afectad[oa]s?\b",
+    r"\b(?:no|nunca|jamas|tampoco)\s+se\s+(?:ve|ven)\s+afectad[oa]s?\b",
     re.IGNORECASE,
 )
 
@@ -320,13 +360,29 @@ def _question_tokens(question: str) -> tuple[str, ...]:
         cleaned = normalized
     else:
         cleaned = _PRONOUNIAL_AFFECT_RE.sub(" ", normalized)
-    tokens = []
+    frame_free: list[str] = []
+    content: list[str] = []
+    saw_ordinal = False
     for token in _TOKEN_RE.findall(cleaned):
         if len(token) < 2 or token in _STOPWORDS:
             continue
         if token in _GENERIC_QUESTION_FRAME_WORDS:
             continue
-        tokens.append(_stem(token))
+        stem = _stem(token)
+        frame_free.append(stem)
+        if _is_ordinal_stem(stem):
+            saw_ordinal = True
+            continue
+        if stem in _GENERIC_QUESTION_FRAME_VERBS or stem in _GENERIC_CONTEXT_STEMS:
+            continue
+        content.append(stem)
+
+    # Context and framing terms may end up emptying the content token set for
+    # questions whose whole content is contextual (e.g. a symptom report about
+    # user access). When no substantive content token remains and the question
+    # does not carry an ordinal selection hint, fall back to the frame-free
+    # token set so such questions still have a usable content set.
+    tokens = content if content or saw_ordinal else (content or frame_free)
     return tuple(dict.fromkeys(tokens))
 
 
@@ -334,6 +390,21 @@ def _contains_injection(text: str) -> bool:
     """Detect obvious instruction-override patterns after normalization."""
     normalized = _normalize(text)
     return any(pattern.search(normalized) for pattern in _INJECTION_PATTERNS)
+
+
+def _is_ordinal_stem(stem: str) -> bool:
+    """Return True when the stem is an ordinal step reference."""
+    return any(stem.startswith(prefix) for prefix, _ in _ORDINAL_STEP_PREFIXES)
+
+
+def _ordinal_step(question: str) -> int | None:
+    """Return the ordinal step referenced by the question, if any."""
+    for token in _TOKEN_RE.findall(_normalize(question)):
+        stem = _stem(token)
+        for prefix, step in _ORDINAL_STEP_PREFIXES:
+            if stem.startswith(prefix):
+                return step
+    return None
 
 
 def _split_candidates(text: str):
@@ -499,6 +570,17 @@ def _candidate_tokens(text: str) -> frozenset[str]:
     return frozenset(_stem(token) for token in _tokenize(text))
 
 
+_LIST_MARKER_NUMBER_RE = re.compile(r"^\s*(\d+)[.)]\s+")
+
+
+def _candidate_step(candidate_text: str) -> int | None:
+    """Return the numbered list marker step of a candidate, if any."""
+    match = _LIST_MARKER_NUMBER_RE.match(candidate_text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 def select_documentary_answer(
     question: str,
     accepted_evidence: list[dict],
@@ -534,7 +616,8 @@ def select_documentary_answer(
             return None
 
     question_tokens = _question_tokens(question)
-    if not question_tokens:
+    ordinal_step = _ordinal_step(question)
+    if not question_tokens and ordinal_step is None:
         return None
 
     # Document-level relevance guard: every question topic token must appear
@@ -567,20 +650,47 @@ def select_documentary_answer(
                 continue
             seen.add(key)
 
+            if ordinal_step is not None:
+                # Ordinal-driven selection: the question asks for a numbered
+                # step, so only the candidate matching that step and satisfying
+                # the intent may be selected.
+                step = _candidate_step(candidate_text)
+                if not numbered or step != ordinal_step:
+                    continue
+                if not _candidate_satisfies_intent(intent, candidate_text, numbered):
+                    continue
+                candidates.append(
+                    _Candidate(
+                        text=candidate_text,
+                        coverage=1.0,
+                        score=0.0 if intent != "procedural" else 0.03,
+                        evidence_index=evidence_index,
+                        order=order,
+                    )
+                )
+                continue
+
             candidate_tokens = _candidate_tokens(candidate_text)
+            content_tokens = [
+                token
+                for token in question_tokens
+                if token not in _GENERIC_CONCEPT_TOKENS
+            ]
+            if not content_tokens:
+                content_tokens = list(question_tokens)
             matched_count = sum(
                 1
-                for token in question_tokens
+                for token in content_tokens
                 if any(
                     _tokens_match(token, candidate_token)
                     for candidate_token in candidate_tokens
                 )
             )
 
-            if matched_count < min(2, len(question_tokens)):
+            if matched_count < min(2, len(content_tokens)):
                 continue
 
-            coverage = matched_count / len(question_tokens)
+            coverage = matched_count / len(content_tokens)
             if coverage < _MIN_COVERAGE:
                 continue
 

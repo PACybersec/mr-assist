@@ -152,6 +152,22 @@ def test_evaluation_A4_first_step_answer_is_exact():
     assert answer == "1. Confirmar si el problema afecta a un usuario o a varios."
 
 
+def test_evaluation_A1_framing_variant_answer_is_exact():
+    """A1 framing variant: framing words are not answer content.
+
+    Pregunta: ¿Qué error muestra el navegador cuando un usuario no puede acceder a la aplicación interna?
+    Expectativa fijada: 'El navegador muestra un error de conexión o timeout.'
+    Evidencia documental: '## Síntomas' -> 'El navegador muestra un error de conexión o timeout.'
+    """
+
+    answer = select_documentary_answer(
+        "¿Qué error muestra el navegador cuando un usuario no puede acceder a la aplicación interna?",
+        [_evidence("El navegador muestra un error de conexión o timeout.")],
+    )
+
+    assert answer == "El navegador muestra un error de conexión o timeout."
+
+
 # ---------------------------------------------------------------------------
 # Grupo B — Casos sin soporte suficiente (abstención esperada)
 # ---------------------------------------------------------------------------

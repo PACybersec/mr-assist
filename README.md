@@ -1,12 +1,19 @@
-# Mr.Assist — Local AI IT Operations Assistant
+# Mr.Assist
+
+**Local AI operations assistant for IT support — grounded, deterministic, experimental.**
 
 Mr.Assist is a local AI-powered IT operations assistant built with Python, Streamlit, Ollama and ChromaDB. It uses retrieval over a knowledge base of documented IT procedures to support troubleshooting, and makes retrieved evidence available for optional development traceability.
+
+> [!WARNING]
+> Experimental prototype. No readiness for production is claimed.
+
+---
 
 ## Current Status
 
 Mr.Assist is currently an **experimental 0.5 prototype** of an IT assistant based on RAG, with a retrieval-focused core and an experimental generative component. Validation so far is **limited**, and no readiness for production is claimed.
 
-**Implemented:**
+### Implemented
 
 - Streamlit interface.
 - ChromaDB persistent vector store.
@@ -16,48 +23,58 @@ Mr.Assist is currently an **experimental 0.5 prototype** of an IT assistant base
 - Deterministic extractive answering: retrieval, filtering, selection of an exact span from the original evidence, and fail-closed validation; responds with an extractive answer or abstains.
 - Strict mode: deterministic extractive response from validated evidence, or abstention.
 
-**Experimental generation:**
+### Experimental generation
 
-- Response generation with a local LLM through Ollama (qwen3:0.6b) is implemented as an experiment and is **not part of the default flow**; deterministic extractive answering remains the default.
+- Response generation with a local LLM through Ollama (`qwen3:0.6b`) is implemented as an experiment and is **not part of the default flow**; deterministic extractive answering remains the default.
 
-**Current parameters:**
+### Selector adjustments after v0.5 (local work)
 
-- Maximum distance: `0.40`.
-- Lexical content coverage: `0.75`.
+- Generic context terms (diagnosis phase, internal/application context, affected-user context) are excluded from content requirements.
+- Generic question-framing verbs are excluded from content requirements.
+- Ordinal step references select numbered candidates by their list marker.
+- The pronominal affectation construction is normalized, including the plural form **`se ven afectados`**.
+- Generic concept tokens (for example `procedimiento`) are excluded from the coverage denominator.
 
-**Historical status of tests:**
+### Current parameters
 
-- Automated regression (historical): last reported run **182 passed, 1 warning** (reported; an earlier documented figure of **169 passed** also exists and the discrepancy is not reconciled). No fresh run was executed during this documentation change.
-- Isolated evaluation (historical): **11 passed, 3 failed** (12 functional cases and 2 auxiliary checks); failures A1, A3 and A4.
+| Parameter | Value |
+| --- | --- |
+| Maximum distance | `0.40` |
+| Lexical content coverage | `0.75` |
 
-- Manual tests in Firefox (historical, communicated by the user): A1 (browser error) false rejection; A2 (single user) correct answer; A3 (service state) correct answer, retains "si se tienen permisos"; A4 (first step) false rejection; denied question: expected abstention; RTO not documented: correct abstention; override attempt plus firewall: safe abstention.
-
-- Manual visual review of the traceability control (reported by the user): enabling and disabling it did not alter answers and did not duplicate messages.
-
-These figures are historical reports and are not results of a run executed during this documentation change.
-
-Note: A3 failed in the isolated historical evaluation and worked in the manual Firefox test communicated by the user; the difference was not investigated further here and the isolated failure was not treated as resolved.
+---
 
 ## Current Verification
 
-- Date: 2026-11-05.
-- Environment of this run: Python 3.14.9.
-- Full suite: **196 tests; 193 passed, 3 failed, 1 warning; 0 errors, 0 skipped, 0 xfailed. Exit code 1.**
+- Date: 2026-11-06 (local verification during the TASK 33–35 workflow).
+- Full suite: **212 passed, 1 warning** (ChromaDB/asyncio deprecation, non-blocking); 0 failures; exit code 0.
 
-Breakdown:
+### Historical status of tests (v0.5 and before)
 
-- `tests/test_functional_evaluation.py`: **11 passed, 3 failed**.
-- Rest of the suite: **182 passed**.
-- Failures A1/A3/A4: the selector returned `None` (abstention) where the cases expected documentary answers.
-- ChromaDB/opentelemetry deprecation warning.
+- Automated regression (historical): last reported run **182 passed, 1 warning** (reported; an earlier documented figure of **169 passed** also exists and the discrepancy is not reconciled). TASK 20 run: **196 tests; 193 passed, 3 failed, 1 warning; exit code 1**.
+- Isolated evaluation (historical): **11 passed, 3 failed** (12 functional cases and 2 auxiliary checks); failures A1, A3 and A4.
 
-Limits:
+### Manual tests in Firefox (historical, communicated by the user)
+
+- A1 (browser error) false rejection; A2 (single user) correct answer; A3 (service state) correct answer, retains "si se tienen permisos"; A4 (first step) false rejection; denied question: expected abstention; RTO not documented: correct abstention; override attempt plus firewall: safe abstention.
+
+> [!NOTE]
+> A3 failed in the isolated historical evaluation and worked in the manual Firefox test communicated by the user; the difference was not investigated further here and the isolated failure was not treated as resolved.
+
+- Manual visual review of the traceability control (reported by the user): enabling and disabling it did not alter answers and did not duplicate messages.
+
+### Development-set evaluation (synthetic, diagnostic)
+
+- The development set (`evals/dev_set_cases.json`) is synthetic and is used for **development** of the selector.
+- It was used to guide local adjustments (for example, TASK 33 for DEV-016 and DEV-035).
+- It is **not** an independent evaluation and does not constitute a general quality or security guarantee.
+
+### Limits of the current verification
 
 - Functional evaluation with synthetic evidence.
 - External services simulated in the relevant tests.
 - This run did not verify real retrieval with embeddings and Ollama, nor does it constitute an end-to-end test with those services.
 - A3 continues to differ from the historically communicated manual result.
-- Experimental 0.x state with known failures; no production fitness declared.
 
 ## Features
 
@@ -141,9 +158,8 @@ The current example knowledge base covers troubleshooting an unavailable interna
 
 ## Evaluation
 
-Retrieval evaluation uses the **R01–R05** cases of the retrieval-focused evaluator (`tests/test_retrieval_evaluation.py`), which checks expected evidence and explicitly forbidden evidence.
-
-Functional evaluation uses the **A, B and C groups** of the full-flow evaluator (`tests/test_functional_evaluation.py`), which checks documented answers, abstentions and adversarial cases.
+- Retrieval evaluation uses the **R01–R05** cases of the retrieval-focused evaluator (`tests/test_retrieval_evaluation.py`), which checks expected evidence and explicitly forbidden evidence.
+- Functional evaluation uses the **A, B and C groups** of the full-flow evaluator (`tests/test_functional_evaluation.py`), which checks documented answers, abstentions and adversarial cases.
 
 - The suite includes relevance-filtering tests and retrieval evaluation tests.
 - The last reported regression run was **182 passed, 1 warning** (reported; see Current Status for the discrepancy with the earlier documented figure of **169 passed**).
@@ -175,6 +191,7 @@ Functional evaluation uses the **A, B and C groups** of the full-flow evaluator 
 - Chunking is simple (paragraph-based, maximum 800 characters).
 - Evaluation relies on textual matching, not semantic understanding.
 - The fail-closed behavior applies to the deterministic extractive flow and the evaluated cases; it is not presented as a general security or correctness guarantee.
+- Known remaining false rejections in the development set: **DEV-004, DEV-005, DEV-006, DEV-032 and DEV-033**; the selector still returns `None` where documentary answers were expected.
 - The project is not production-ready.
 
 ## Roadmap
@@ -190,6 +207,5 @@ This project is for educational and portfolio purposes. Responses should be revi
 ## Author
 
 **Pablo Acosta Arango**
-Creator and developer of Mr.Assist.
 
 Cybersecurity enthusiast exploring local AI, IT operations, security engineering and practical automation.

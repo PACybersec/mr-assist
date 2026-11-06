@@ -503,6 +503,142 @@ def test_relevance_guard_preserves_supported_answers():
         assert answer in PROCEDURE
 
 
+def test_supported_symptom_question_ignores_framing_verb():
+    """Framing verbs such as "muestra" are not answer content.
+
+    The documentary answer stays the same when the symptom question is phrased
+    with a different framing verb instead of "aparece".
+    """
+    question = (
+        "¿Qué error muestra el navegador cuando un usuario no puede acceder a "
+        "la aplicación interna?"
+    )
+
+    answer = select_documentary_answer(
+        question,
+        [_evidence("El navegador muestra un error de conexión o timeout.")],
+    )
+
+    assert answer == "El navegador muestra un error de conexión o timeout."
+    assert answer in PROCEDURE
+
+
+def test_ordinals_select_the_referenced_numbered_step():
+    """Ordinal questions select the referenced numbered step, not any step.
+
+    A question asking for the first step must not select a later numbered step
+    when only that later step is present in the accepted evidence.
+    """
+    step5 = (
+        "5. Revisar el estado del servicio y los registros disponibles, "
+        "si se tienen permisos."
+    )
+    question = (
+        "¿Cuál es el primer paso del diagnóstico cuando un usuario no puede "
+        "acceder a la aplicación?"
+    )
+
+    assert select_documentary_answer(question, [_evidence(step5)]) is None
+
+    step1 = "1. Confirmar si el problema afecta a un usuario o a varios."
+    assert select_documentary_answer(question, [_evidence(step1)]) == step1
+
+
+def test_context_phase_terms_are_not_answer_content():
+    """Context phase terms are not answer content: unrelated evidence abstains.
+
+    A diagnosis-phase context ("diagnóstico") must not become a lexical
+    requirement that keeps an otherwise answerable question from being answered
+    with unrelated evidence.
+    """
+    question = "¿Qué puedo revisar del estado del servicio durante el diagnóstico?"
+
+    evidence_text = (
+        "No desactivar el firewall ni cambiar reglas de acceso para "
+        "solucionar el problema sin autorización."
+    )
+
+    assert select_documentary_answer(question, [_evidence(evidence_text)]) is None
+
+
+def test_context_only_question_abstains_when_evidence_is_unrelated():
+    """Fallback content set must not select an arbitrary unrelated answer.
+
+    When a question's content reduces to contextual terms, the fallback keeps a
+    usable content set; with unrelated evidence the selector must abstain
+    instead of picking an arbitrary answer.
+    """
+    question = (
+        "¿Qué síntomas indican que un usuario no puede acceder a la "
+        "aplicación interna?"
+    )
+    evidence_text = (
+        "No desactivar el firewall ni cambiar reglas de acceso para "
+        "solucionar el problema sin autorización."
+    )
+
+    assert select_documentary_answer(question, [_evidence(evidence_text)]) is None
+
+
+def test_error_question_requires_the_requested_object_in_evidence():
+    """The requested object (server vs browser) must be part of the content."""
+
+    question = (
+        "¿Qué error aparece en el servidor cuando un usuario no puede "
+        "acceder a la aplicación interna?"
+    )
+
+    answer = select_documentary_answer(
+        question,
+        [_evidence("El navegador muestra un error de conexión o timeout.")],
+    )
+
+    assert answer is None
+
+
+def test_exact_span_without_answer_content_is_not_accepted():
+    """An exact span that lacks the question content must not be selected."""
+
+    question = (
+        "¿Qué error aparece en el navegador cuando un usuario no puede "
+        "acceder a la aplicación interna?"
+    )
+    evidence_text = "El firewall muestra un error de red."
+
+    assert select_documentary_answer(question, [_evidence(evidence_text)]) is None
+
+
+def test_distinct_procedure_with_generic_overlap_abstains():
+    """A distinct procedure must not be accepted only via generic overlap."""
+
+    question = "¿Qué debo comprobar si afecta a varios usuarios?"
+
+    evidence_text = "El firewall se configura en el servidor de aplicaciones."
+
+    assert select_documentary_answer(question, [_evidence(evidence_text)]) is None
+
+
+def test_ordinals_select_step_one_when_numbered_steps_are_reversed():
+    """Reversed numbered steps: ordinal still selects the referenced step.
+
+    Both steps belong to the same procedure but appear in reverse order; the
+    ordinal-driven selection must pick the step referenced by the question.
+    """
+    step5 = (
+        "5. Revisar el estado del servicio y los registros disponibles, "
+        "si se tienen permisos."
+    )
+    step1 = "1. Confirmar si el problema afecta a un usuario o a varios."
+    question = (
+        "¿Cuál es el primer paso del diagnóstico cuando un usuario no puede "
+        "acceder a la aplicación?"
+    )
+
+    evidence = [_evidence(step5), _evidence(step1)]
+
+    assert select_documentary_answer(question, evidence) == step1
+
+
 # ---------------------------------------------------------------------------
 # TASK 13 — Normalización acotada de la construcción pronominal "se ve afectado"
 # ---------------------------------------------------------------------------
@@ -617,5 +753,114 @@ def test_task13_C_other_uses_of_ve_are_not_affected_by_construction_rule():
             )
         ],
     )
+
+    assert answer is None
+
+
+# ---------------------------------------------------------------------------
+# TASK 33 — Ajustes conservadores del selector (DEV-016 y DEV-035)
+# ---------------------------------------------------------------------------
+
+_TASK33_MULTI_USER_BULLET = (
+    "- Si afecta a varios usuarios, comprobar la red y el estado del "
+    "servicio compartido."
+)
+
+
+def test_task33_dev016_plural_ven_affectation_selects_multi_user_branch():
+    """TASK 33, DEV-016: «se ven afectados» se trata como construcción pronominal.
+
+    La pregunta sobre varios usuarios con afectación plural debe obtener la rama
+    multi-usuario de la evidencia sin que el token suelto «ven» bloquee la
+    relevancia.
+    """
+
+    answer = select_documentary_answer(
+        "¿Qué se debe hacer cuando varios usuarios se ven afectados?",
+        [
+            _evidence(
+                "- Si afecta a varios usuarios, comprobar la red y el estado del "
+                "servicio compartido."
+            )
+        ],
+    )
+
+    assert answer == _TASK33_MULTI_USER_BULLET
+
+
+def test_task33_dev016_plural_ven_with_unrelated_evidence_abstains():
+    """TASK 33, DEV-016: evidencia no relacionada con la afectación debe abstenerse."""
+
+    answer = select_documentary_answer(
+        "¿Qué se debe hacer cuando varios usuarios se ven afectados?",
+        [
+            _evidence(
+                "No desactivar el firewall ni cambiar reglas de acceso para "
+                "solucionar el problema sin autorización."
+            )
+        ],
+    )
+
+    assert answer is None
+
+
+def test_task33_dev016_plural_ven_single_user_evidence_abstains():
+    """TASK 33, DEV-016: rama de un solo usuario no responde a pregunta de varios usuarios."""
+
+    answer = select_documentary_answer(
+        "¿Qué se debe hacer cuando varios usuarios se ven afectados?",
+        [
+            _evidence(
+                "- Si afecta a un solo usuario, revisar su conexión y configuración."
+            )
+        ],
+    )
+
+    assert answer is None
+
+
+def test_task33_dev035_procedural_generic_concept_token_returns_answer():
+    """TASK 33, DEV-035: el concepto genérico «procedimiento» no debe diluir la cobertura."""
+
+    question = "¿Cuál es el procedimiento para documentar el incidente?"
+    evidence_text = "Documentar el incidente con hora, síntomas y evidencias."
+
+    answer = select_documentary_answer(question, [_evidence(evidence_text)])
+
+    assert answer == evidence_text
+
+
+def test_task33_dev035_insufficient_evidence_abstains():
+    """TASK 33, DEV-035: evidencia insuficiente debe seguir absteniendo."""
+
+    answer = select_documentary_answer(
+        "¿Cuál es el procedimiento para documentar el incidente?",
+        [_evidence("El firewall se configura en el servidor de aplicaciones.")],
+    )
+
+    assert answer is None
+
+
+def test_task33_dev035_different_topic_abstains():
+    """TASK 33, DEV-035: tema distinto del de la evidencia debe abstenerse."""
+
+    answer = select_documentary_answer(
+        "¿Cuál es el procedimiento para hacer backup diario del servidor?",
+        [_evidence("Documentar el incidente con hora, síntomas y evidencias.")],
+    )
+
+    assert answer is None
+
+
+def test_task33_dev035_ambiguous_candidates_abstain():
+    """TASK 33, DEV-035: candidatos ambiguos con igual cobertura deben abstenerse."""
+
+    question = "¿Cuál es el procedimiento para documentar el incidente?"
+    evidence_text = (
+        "Documentar el incidente con hora, síntomas y evidencias.\n"
+        "Documentar el incidente con hora y evidencias."
+    )
+
+    answer = select_documentary_answer(question, [_evidence(evidence_text)])
 
     assert answer is None
